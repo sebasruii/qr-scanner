@@ -138,8 +138,10 @@
 
 <div id="toolbar">
   <button id="btn-toggle">Pausar</button>
+  <button id="btn-photo">Desde foto</button>
   <button id="btn-clear" class="danger">Borrar todo</button>
 </div>
+<input id="file" type="file" accept="image/*" hidden>
 
 <div id="countbar">
   <div><span class="n" id="count">0</span> <span class="lbl">códigos</span></div>
@@ -169,6 +171,8 @@
     flash: document.getElementById('flash'),
     scanline: document.getElementById('scanline'),
     toggle: document.getElementById('btn-toggle'),
+    photo: document.getElementById('btn-photo'),
+    file: document.getElementById('file'),
     clear: document.getElementById('btn-clear'),
     exportBtn: document.getElementById('btn-export'),
     count: document.getElementById('count'),
@@ -317,6 +321,35 @@
   }
 
   els.toggle.addEventListener('click', () => { running ? stopScanner() : startScanner(); });
+
+  // misma librería, imagen fija: separa un problema de enfoque de un código que no se puede decodificar
+  els.photo.addEventListener('click', () => els.file.click());
+
+  els.file.addEventListener('change', async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+
+    const wasRunning = running;
+    await stopScanner();
+    els.camstate.textContent = 'leyendo la imagen…';
+
+    let note;
+    let fileScanner = null;
+    try{
+      fileScanner = new Html5Qrcode('reader', { verbose:false });
+      const text = await fileScanner.scanFile(file, false);
+      onScanSuccess(text);
+      note = 'imagen: leída ✓';
+    }catch(err){
+      note = 'imagen: no se pudo decodificar (' + (err.message || err) + ')';
+    }finally{
+      if (fileScanner){ try{ fileScanner.clear(); }catch(_){} }
+    }
+
+    if (wasRunning) await startScanner();
+    els.camstate.textContent = note + (running ? ' · escaneando ' + describeTrack() : '');
+  });
 
   els.clear.addEventListener('click', () => {
     if (results.length === 0) return;
