@@ -45,10 +45,7 @@
     position:relative; width:100%; aspect-ratio: 1 / 1; max-height:52vh;
     background:#000; border-bottom:1px solid var(--line); overflow:hidden;
   }
-  #reader{ width:100%; height:100%; }
-  #reader video{ width:100% !important; height:100% !important; object-fit:cover; }
-  /* oculta los controles/enlaces por defecto de la librería, solo queremos el video */
-  #reader img, #reader__dashboard, #reader__header_message{ display:none !important; }
+  #video{ width:100%; height:100%; object-fit:cover; display:block; background:#000; }
 
   #scanline{
     position:absolute; left:6%; right:6%; top:50%; height:2px;
@@ -130,7 +127,7 @@
 </header>
 
 <div id="cam-wrap">
-  <div id="reader"></div>
+  <video id="video" playsinline webkit-playsinline muted autoplay></video>
   <div id="scanline"></div>
   <div id="flash"></div>
   <div id="camstate">iniciando cámara…</div>
@@ -155,12 +152,19 @@
   <button id="btn-export" class="primary">Descargar CSV</button>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.4/html5-qrcode.min.js" integrity="sha512-k/KAe4Yff9EUdYI5/IAHlwUswqeipP+Cp5qnrsUjTPCgl51La2/JhyyjNciztD7mWNKLSXci48m7cctATKfLlQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js" integrity="sha384-b5Ya4Bq3qCyz39m2ISh+4DxjAIljdeFwK/BsXLuj9gugaNwAcj/ia15fxNZL9Nlx" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <script>
   const DEDUPE_MS = 1800; // ventana para ignorar el mismo código leído seguidas veces
   const STORAGE_KEY = 'escaner-lotes:v1';
+  const DECODE_MS = 120;        // cada cuánto se intenta decodificar un frame
+  const MAX_VIDEO_W = 1280;     // techo de resolución al decodificar vídeo, por coste
+  const MAX_PHOTO_W = 1600;     // en una foto fija podemos permitirnos más detalle
+  const ZBAR_URL = 'https://cdn.jsdelivr.net/npm/@undecaf/zbar-wasm@0.11.0/dist/inlined/index.mjs';
 
-  let html5QrCode = null;
+  let stream = null;
+  let tickTimer = null;
+  let decoding = false;
+  let zbarScan;                 // undefined = sin cargar · false = no disponible
   let running = false;
   let results = [];   // { idx, text, time }
   let lastCode = null;
@@ -170,6 +174,7 @@
     camstate: document.getElementById('camstate'),
     flash: document.getElementById('flash'),
     scanline: document.getElementById('scanline'),
+    video: document.getElementById('video'),
     toggle: document.getElementById('btn-toggle'),
     photo: document.getElementById('btn-photo'),
     file: document.getElementById('file'),
@@ -200,6 +205,59 @@
         results.map(r => ({ text: r.text, time: r.time.toISOString() }))
       ));
     }catch(e){ /* modo privado o sin espacio: seguimos solo en memoria */ }
+  }
+
+  // ZXing (html5-qrcode) no leía códigos que la cámara de iOS sí resuelve, así que
+  // se prueban dos motores distintos: jsQR primero por rapidez, ZBar después por tolerancia.
+  async function loadZbar(){
+    if (zbarScan !== undefined) return zbarScan;
+    zbarScan = false;
+    try{
+      const mod = await import(ZBAR_URL);
+      zbarScan = mod.scanImageData;
+    }catch(e){ /* nos quedamos solo con jsQR */ }
+    return zbarScan;
+  }
+
+  async function decode(imageData){
+    // inversionAttempts:'attemptBoth' cubre los códigos claros sobre fondo oscuro
+    const hit = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: 'attemptBoth' });
+    if (hit && hit.data) return { text: hit.data, engine: 'jsQR' };
+
+    const scan = await loadZbar();
+    if (scan){
+      const symbols = await scan(imageData);
+      if (symbols && symbols.length) return { text: symbols[0].decode(), engine: 'ZBar' };
+    }
+    return null;
+  }
+
+  function toImageData(source, sw, sh, maxW){
+    if (!sw || !sh) return null;
+    const scale = Math.min(1, maxW / sw);
+    const w = Math.max(1, Math.round(sw * scale));
+    const h = Math.max(1, Math.round(sh * scale));
+    const cv = document.createElement('canvas');
+    cv.width = w; cv.height = h;
+    const cx = cv.getContext('2d', { willReadFrequently: true });
+    cx.drawImage(source, 0, 0, w, h);
+    return cx.getImageData(0, 0, w, h);
+  }
+
+  async function tick(){
+    if (decoding || !running) return;
+    decoding = true;
+    try{
+      const img = toImageData(els.video, els.video.videoWidth, els.video.videoHeight, MAX_VIDEO_W);
+      if (img){
+        const found = await decode(img);
+        if (found){
+          onScanSuccess(found.text);
+          els.camstate.textContent = 'leído con ' + found.engine + ' · ' + describeTrack();
+        }
+      }
+    }catch(e){ /* un frame ilegible no debe cortar el bucle */ }
+    finally{ decoding = false; }
   }
 
   function onScanSuccess(decodedText){
@@ -277,24 +335,19 @@
       return;
     }
     try{
-      html5QrCode = new Html5Qrcode('reader', { verbose:false });
-      await html5QrCode.start(
-        { facingMode: 'environment' },
-        {
-          fps: 10,
-          // sin qrbox se decodifica el frame completo: no hace falta centrar el código
-          // y no hay desajuste con el object-fit:cover del video
-          videoConstraints: {
-            facingMode: 'environment',
-            width: { ideal: 1280 },
-            height: { ideal: 720 }
-          }
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 }
         },
-        onScanSuccess,
-        onScanFailure
-      );
+        audio: false
+      });
+      els.video.srcObject = stream;
+      await els.video.play();
       running = true;
-      els.camstate.textContent = 'escaneando… ' + describeTrack();
+      tickTimer = setInterval(tick, DECODE_MS);
+      els.camstate.textContent = 'escaneando ' + describeTrack();
       els.toggle.textContent = 'Pausar';
       els.scanline.style.display = 'block';
     }catch(err){
@@ -305,15 +358,15 @@
   // sirve para diagnosticar: si la resolución es baja el código denso no se resuelve
   function describeTrack(){
     try{
-      const st = html5QrCode.getRunningTrackSettings();
+      const st = stream.getVideoTracks()[0].getSettings();
       return (st.width || '?') + '×' + (st.height || '?');
     }catch(e){ return ''; }
   }
 
   async function stopScanner(){
-    if (html5QrCode && running){
-      try{ await html5QrCode.stop(); html5QrCode.clear(); }catch(e){}
-    }
+    if (tickTimer){ clearInterval(tickTimer); tickTimer = null; }
+    if (stream){ stream.getTracks().forEach(t => t.stop()); stream = null; }
+    els.video.srcObject = null;
     running = false;
     els.camstate.textContent = 'en pausa';
     els.toggle.textContent = 'Reanudar';
@@ -322,7 +375,7 @@
 
   els.toggle.addEventListener('click', () => { running ? stopScanner() : startScanner(); });
 
-  // misma librería, imagen fija: separa un problema de enfoque de un código que no se puede decodificar
+  // imagen fija con los mismos decodificadores: separa un fallo de enfoque de un código ilegible
   els.photo.addEventListener('click', () => els.file.click());
 
   els.file.addEventListener('change', async (e) => {
@@ -330,26 +383,33 @@
     e.target.value = '';
     if (!file) return;
 
-    const wasRunning = running;
-    await stopScanner();
     els.camstate.textContent = 'leyendo la imagen…';
-
     let note;
-    let fileScanner = null;
     try{
-      fileScanner = new Html5Qrcode('reader', { verbose:false });
-      const text = await fileScanner.scanFile(file, false);
-      onScanSuccess(text);
-      note = 'imagen: leída ✓';
+      const im = await loadImage(file);
+      const img = toImageData(im, im.naturalWidth, im.naturalHeight, MAX_PHOTO_W);
+      const found = img && await decode(img);
+      if (found){
+        onScanSuccess(found.text);
+        note = 'imagen: leída con ' + found.engine + ' ✓';
+      }else{
+        note = 'imagen: ni jsQR ni ZBar reconocieron el código';
+      }
     }catch(err){
-      note = 'imagen: no se pudo decodificar (' + (err.message || err) + ')';
-    }finally{
-      if (fileScanner){ try{ fileScanner.clear(); }catch(_){} }
+      note = 'imagen: error (' + (err.message || err) + ')';
     }
-
-    if (wasRunning) await startScanner();
     els.camstate.textContent = note + (running ? ' · escaneando ' + describeTrack() : '');
   });
+
+  function loadImage(file){
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const im = new Image();
+      im.onload = () => { URL.revokeObjectURL(url); resolve(im); };
+      im.onerror = () => { URL.revokeObjectURL(url); reject(new Error('no se pudo abrir la imagen')); };
+      im.src = url;
+    });
+  }
 
   els.clear.addEventListener('click', () => {
     if (results.length === 0) return;
@@ -362,6 +422,7 @@
 
   results = loadResults();
   renderList();
+  loadZbar();      // se precarga para que el primer código no espere al wasm
   startScanner();
 </script>
 </body>
