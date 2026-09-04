@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#050707">
+<title>Escáner por lotes</title>
+<style>
+  :root{
+    --bg: #050707;
+    --panel: #0d1210;
+    --line: #1c2622;
+    --text: #e9efe9;
+    --muted: #7c8a83;
+    --laser: #ff3b30;
+    --go: #9bff6a;
+    --go-dim: #4d7a3a;
+    --mono: ui-monospace, "SF Mono", "Roboto Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  *{ box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body{
+    margin:0; padding:0; background:var(--bg); color:var(--text);
+    font-family:var(--sans); height:100%;
+  }
+  body{
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    display:flex; flex-direction:column; min-height:100vh;
+  }
+  header{
+    padding:18px 18px 10px;
+    border-bottom:1px solid var(--line);
+  }
+  header h1{
+    margin:0; font-size:17px; font-weight:600; letter-spacing:0.2px;
+  }
+  header p{
+    margin:4px 0 0; font-size:12.5px; color:var(--muted);
+  }
+
+  #cam-wrap{
+    position:relative; width:100%; aspect-ratio: 1 / 1; max-height:52vh;
+    background:#000; border-bottom:1px solid var(--line); overflow:hidden;
+  }
+  #reader{ width:100%; height:100%; }
+  #reader video{ width:100% !important; height:100% !important; object-fit:cover; }
+  /* oculta los controles/enlaces por defecto de la librería, solo queremos el video */
+  #reader img, #reader__dashboard, #reader__header_message{ display:none !important; }
+
+  #scanline{
+    position:absolute; left:6%; right:6%; top:50%; height:2px;
+    background:var(--laser); box-shadow:0 0 8px var(--laser);
+    animation: sweep 2.1s ease-in-out infinite;
+    pointer-events:none;
+  }
+  @keyframes sweep{
+    0%,100%{ top:18%; opacity:.9; }
+    50%{ top:82%; opacity:.5; }
+  }
+  #flash{
+    position:absolute; inset:0; background:var(--go); opacity:0;
+    pointer-events:none;
+  }
+  #flash.hit{ animation: hit .3s ease-out; }
+  @keyframes hit{ 0%{opacity:.55;} 100%{opacity:0;} }
+
+  #camstate{
+    position:absolute; left:0; right:0; bottom:0; padding:8px 10px;
+    font-size:11.5px; color:var(--muted); font-family:var(--mono);
+    background:linear-gradient(to top, rgba(0,0,0,.65), transparent);
+  }
+
+  #toolbar{
+    display:flex; gap:8px; padding:12px 18px; border-bottom:1px solid var(--line);
+  }
+  button{
+    font-family:var(--sans); font-size:14px; font-weight:600;
+    border-radius:10px; border:1px solid var(--line); background:var(--panel);
+    color:var(--text); padding:11px 12px; flex:1; cursor:pointer;
+  }
+  button:active{ transform: scale(0.97); }
+  button.primary{ background:var(--go); color:#06170a; border-color:var(--go); }
+  button.danger{ color:var(--laser); border-color:#3a1512; }
+  button:disabled{ opacity:.4; }
+
+  #countbar{
+    display:flex; align-items:baseline; justify-content:space-between;
+    padding:12px 18px 4px;
+  }
+  #countbar .n{ font-family:var(--mono); font-size:26px; font-weight:600; }
+  #countbar .lbl{ font-size:12px; color:var(--muted); }
+
+  #list{
+    flex:1; overflow-y:auto; padding:6px 18px 100px;
+  }
+  .row{
+    display:flex; align-items:center; gap:10px;
+    padding:10px 0; border-bottom:1px solid var(--line);
+  }
+  .row .idx{ font-family:var(--mono); font-size:12px; color:var(--muted); width:26px; flex-shrink:0; }
+  .row .val{ flex:1; min-width:0; }
+  .row .val .txt{
+    font-family:var(--mono); font-size:13.5px; white-space:nowrap; overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .row .val .ts{ font-size:11px; color:var(--muted); margin-top:2px; }
+  .row .del{
+    flex-shrink:0; background:none; border:none; color:var(--muted);
+    font-size:18px; padding:2px 8px; flex:none; width:auto;
+  }
+  #empty{
+    padding:40px 18px; text-align:center; color:var(--muted); font-size:13.5px;
+  }
+
+  #export-bar{
+    position:sticky; bottom:0; padding:12px 18px calc(12px + env(safe-area-inset-bottom));
+    background:linear-gradient(to top, var(--bg) 70%, transparent);
+    display:flex; gap:8px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Escáner por lotes</h1>
+  <p>Escanea varios códigos seguidos. Quedan guardados en el móvil hasta que los borres.</p>
+</header>
+
+<div id="cam-wrap">
+  <div id="reader"></div>
+  <div id="scanline"></div>
+  <div id="flash"></div>
+  <div id="camstate">iniciando cámara…</div>
+</div>
+
+<div id="toolbar">
+  <button id="btn-toggle">Pausar</button>
+  <button id="btn-clear" class="danger">Borrar todo</button>
+</div>
+
+<div id="countbar">
+  <div><span class="n" id="count">0</span> <span class="lbl">códigos</span></div>
+  <div class="lbl" id="lastcode">—</div>
+</div>
+
+<div id="list"></div>
+<div id="empty">Todavía no escaneaste nada. Apuntá la cámara a un código.</div>
+
+<div id="export-bar">
+  <button id="btn-export" class="primary">Descargar CSV</button>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.4/html5-qrcode.min.js" integrity="sha512-k/KAe4Yff9EUdYI5/IAHlwUswqeipP+Cp5qnrsUjTPCgl51La2/JhyyjNciztD7mWNKLSXci48m7cctATKfLlQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script>
+  const DEDUPE_MS = 1800; // ventana para ignorar el mismo código leído seguidas veces
+  const STORAGE_KEY = 'escaner-lotes:v1';
+
+  let html5QrCode = null;
+  let running = false;
+  let results = [];   // { idx, text, time }
+  let lastCode = null;
+  let lastTime = 0;
+
+  const els = {
+    camstate: document.getElementById('camstate'),
+    flash: document.getElementById('flash'),
+    scanline: document.getElementById('scanline'),
+    toggle: document.getElementById('btn-toggle'),
+    clear: document.getElementById('btn-clear'),
+    exportBtn: document.getElementById('btn-export'),
+    count: document.getElementById('count'),
+    lastcode: document.getElementById('lastcode'),
+    list: document.getElementById('list'),
+    empty: document.getElementById('empty'),
+  };
+
+  function fmtTime(d){
+    return d.toLocaleTimeString('es-ES', { hour12:false });
+  }
+
+  // Safari en iOS descarta las pestañas en segundo plano: sin esto se pierde el lote entero
+  function loadResults(){
+    try{
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return [];
+      return JSON.parse(raw).map((r, i) => ({ idx: i + 1, text: r.text, time: new Date(r.time) }));
+    }catch(e){ return []; }
+  }
+
+  function saveResults(){
+    try{
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(
+        results.map(r => ({ text: r.text, time: r.time.toISOString() }))
+      ));
+    }catch(e){ /* modo privado o sin espacio: seguimos solo en memoria */ }
+  }
+
+  // el visor se achica en horizontal: un qrbox fijo de 250px lo desborda y la librería falla
+  function qrboxSize(viewW, viewH){
+    const side = Math.floor(Math.min(viewW, viewH) * 0.7);
+    return { width: side, height: side };
+  }
+
+  function onScanSuccess(decodedText){
+    const now = Date.now();
+    if (decodedText === lastCode && (now - lastTime) < DEDUPE_MS) return;
+    lastCode = decodedText;
+    lastTime = now;
+
+    results.push({ idx: results.length + 1, text: decodedText, time: new Date() });
+    if (navigator.vibrate) navigator.vibrate(60);
+    els.flash.classList.remove('hit'); void els.flash.offsetWidth; els.flash.classList.add('hit');
+    renderList();
+  }
+
+  function onScanFailure(){ /* se dispara en cada frame sin código: se ignora a propósito */ }
+
+  function renderList(){
+    saveResults();
+    els.count.textContent = results.length;
+    els.lastcode.textContent = results.length ? ('último: ' + fmtTime(results[results.length-1].time)) : '—';
+    els.empty.style.display = results.length ? 'none' : 'block';
+    els.exportBtn.disabled = results.length === 0;
+
+    els.list.innerHTML = '';
+    for (let i = results.length - 1; i >= 0; i--){
+      const r = results[i];
+      const row = document.createElement('div');
+      row.className = 'row';
+      row.innerHTML = `
+        <div class="idx">#${r.idx}</div>
+        <div class="val">
+          <div class="txt">${escapeHtml(r.text)}</div>
+          <div class="ts">${fmtTime(r.time)}</div>
+        </div>
+        <button class="del" data-idx="${r.idx}" title="borrar">✕</button>
+      `;
+      els.list.appendChild(row);
+    }
+  }
+
+  els.list.addEventListener('click', (e) => {
+    const btn = e.target.closest('.del');
+    if (!btn) return;
+    const idx = Number(btn.dataset.idx);
+    results = results.filter(r => r.idx !== idx).map((r, i) => ({ ...r, idx: i + 1 }));
+    renderList();
+  });
+
+  function escapeHtml(s){
+    return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  function csvEscape(text){
+    if (/[",\n\r]/.test(text)) return '"' + text.replace(/"/g, '""') + '"';
+    return text;
+  }
+
+  function downloadCSV(){
+    if (results.length === 0) return;
+    const header = ['#', 'contenido', 'fecha_hora'];
+    const rows = results.map(r => [r.idx, csvEscape(r.text), r.time.toLocaleString('es-ES')]);
+    const csv = [header, ...rows].map(row => row.join(',')).join('\r\n');
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const stamp = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
+    const a = document.createElement('a');
+    a.href = url; a.download = `escaneos_${stamp}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  async function startScanner(){
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      els.camstate.textContent = 'este navegador bloqueó la cámara (necesita HTTPS, no un archivo local)';
+      return;
+    }
+    try{
+      html5QrCode = new Html5Qrcode('reader', { verbose:false });
+      await html5QrCode.start(
+        { facingMode: 'environment' },
+        { fps: 10, qrbox: qrboxSize, aspectRatio: 1.0 },
+        onScanSuccess,
+        onScanFailure
+      );
+      running = true;
+      els.camstate.textContent = 'escaneando…';
+      els.toggle.textContent = 'Pausar';
+      els.scanline.style.display = 'block';
+    }catch(err){
+      els.camstate.textContent = 'no se pudo abrir la cámara: ' + (err.message || err);
+    }
+  }
+
+  async function stopScanner(){
+    if (html5QrCode && running){
+      try{ await html5QrCode.stop(); html5QrCode.clear(); }catch(e){}
+    }
+    running = false;
+    els.camstate.textContent = 'en pausa';
+    els.toggle.textContent = 'Reanudar';
+    els.scanline.style.display = 'none';
+  }
+
+  els.toggle.addEventListener('click', () => { running ? stopScanner() : startScanner(); });
+
+  els.clear.addEventListener('click', () => {
+    if (results.length === 0) return;
+    if (confirm('¿Borrar los ' + results.length + ' códigos escaneados?')){
+      results = []; lastCode = null; renderList();
+    }
+  });
+
+  els.exportBtn.addEventListener('click', downloadCSV);
+
+  results = loadResults();
+  renderList();
+  startScanner();
+</script>
+</body>
+</html>
