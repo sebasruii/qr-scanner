@@ -198,12 +198,6 @@
     }catch(e){ /* modo privado o sin espacio: seguimos solo en memoria */ }
   }
 
-  // el visor se achica en horizontal: un qrbox fijo de 250px lo desborda y la librería falla
-  function qrboxSize(viewW, viewH){
-    const side = Math.floor(Math.min(viewW, viewH) * 0.7);
-    return { width: side, height: side };
-  }
-
   function onScanSuccess(decodedText){
     const now = Date.now();
     if (decodedText === lastCode && (now - lastTime) < DEDUPE_MS) return;
@@ -282,17 +276,34 @@
       html5QrCode = new Html5Qrcode('reader', { verbose:false });
       await html5QrCode.start(
         { facingMode: 'environment' },
-        { fps: 10, qrbox: qrboxSize, aspectRatio: 1.0 },
+        {
+          fps: 10,
+          // sin qrbox se decodifica el frame completo: no hace falta centrar el código
+          // y no hay desajuste con el object-fit:cover del video
+          videoConstraints: {
+            facingMode: 'environment',
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          }
+        },
         onScanSuccess,
         onScanFailure
       );
       running = true;
-      els.camstate.textContent = 'escaneando…';
+      els.camstate.textContent = 'escaneando… ' + describeTrack();
       els.toggle.textContent = 'Pausar';
       els.scanline.style.display = 'block';
     }catch(err){
       els.camstate.textContent = 'no se pudo abrir la cámara: ' + (err.message || err);
     }
+  }
+
+  // sirve para diagnosticar: si la resolución es baja el código denso no se resuelve
+  function describeTrack(){
+    try{
+      const st = html5QrCode.getRunningTrackSettings();
+      return (st.width || '?') + '×' + (st.height || '?');
+    }catch(e){ return ''; }
   }
 
   async function stopScanner(){
