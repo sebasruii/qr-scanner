@@ -7,6 +7,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#050707">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'none'; base-uri 'none'; form-action 'none'">
 <title>Escáner por lotes</title>
 <style>
   :root{
@@ -146,20 +147,20 @@
 </div>
 
 <div id="list"></div>
-<div id="empty">Todavía no escaneaste nada. Apuntá la cámara a un código.</div>
+<div id="empty">Todavía no has escaneado nada. Apunta la cámara a un código.</div>
 
 <div id="export-bar">
   <button id="btn-export" class="primary">Descargar CSV</button>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js" integrity="sha384-b5Ya4Bq3qCyz39m2ISh+4DxjAIljdeFwK/BsXLuj9gugaNwAcj/ia15fxNZL9Nlx" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="lib/jsQR.js"></script>
 <script>
   const DEDUPE_MS = 1800; // ventana para ignorar el mismo código leído seguidas veces
   const STORAGE_KEY = 'escaner-lotes:v1';
   const DECODE_MS = 120;        // cada cuánto se intenta decodificar un frame
   const MAX_VIDEO_W = 1280;     // techo de resolución al decodificar vídeo, por coste
   const MAX_PHOTO_W = 1600;     // en una foto fija podemos permitirnos más detalle
-  const ZBAR_URL = 'https://cdn.jsdelivr.net/npm/@undecaf/zbar-wasm@0.11.0/dist/inlined/index.mjs';
+  const ZBAR_URL = './lib/zbar-wasm.mjs';
 
   let stream = null;
   let tickTimer = null;
